@@ -1,7 +1,7 @@
 var babel = require('babel-core');
 
 module.exports = function(options){
-    return function(code){
-        return babel.transform(code, options).code;
+    return function(module){
+        return babel.transform(module.code, options);
     }
 }

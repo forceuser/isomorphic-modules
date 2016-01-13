@@ -1,10 +1,10 @@
-module.exports = function enviromentFilter(enviroment){
-    return function(code){
+module.exports = function (enviroment){
+    return function(result){
         var rxRemove = new RegExp('[\\s]{0,1}[ \\t]*?\\/\\*--env\\:(?!'+ enviroment +').*?\\*\\/[\\s]*([\\s\\S]*?)(?=\\s*\\/\\*--(?:env.*?|end)\\*\\/)','gm');
         var rxUnwrap = new RegExp('\\/\\*--env\\:(?='+ enviroment +').*?\\*\\/[\\s]*([\\s\\S]*?)(\\s*\\/\\*--(?:env.*?|end)\\*\\/)','gm');
         
-        code = code.replace(rxRemove,'');
-        code = code.replace(rxUnwrap,'$1');
-        return code;
+        return {
+            code: result.code.replace(rxRemove,'').replace(rxUnwrap,'$1')
+        };
     }
 };

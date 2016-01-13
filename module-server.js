@@ -2,15 +2,17 @@ var resolve = require("resolve");
 var path = require('path');
 var fs = require('fs');
 var mime = require('mime');
-var babel = require("babel-core");
-var enviromentTransformer = require("./transformers/enviroment");
+var assign = require("lodash/object/assign");
+
+var CodeManager = require("isomorphic-modules/code-manager");
+var manager = new CodeManager({
+    compile: false,
+    cache: "client-cache"
+});
+
 
 function wrapSource(content,id,filename){
     return content+'\n//# moduleInfo={"id": "'+id+'","filename": "'+filename+'"}';
-}
-
-function wrapJson(content,id,filename){
-    return wrapSource('module.exports = '+content.toString().trim()+';',id,filename);
 }
 
 function resolveModule(mpath,basedir){
@@ -39,7 +41,7 @@ function resolveModule(mpath,basedir){
         }
         
         
-        if(~['path'].indexOf(mpath)){
+        if(~['path'].indexOf(mpath)&&mpath){
             var nodeCore;
             nodeCore = require('node-libs-browser')[mpath];
             if(nodeCore){
@@ -68,66 +70,36 @@ function resolveModule(mpath,basedir){
 module.exports = function(options){
     options = options||{};
     var basedir = options.basedir||path.dirname(require.main.filename);
+    manager.addTransformer(function (result){
+        if(result.code){
+            result.code = result.code.replace(/(\/\/#(.*?)sourceMappingURL(.*))$/gm,'');
+        }
+        return result;
+    },['.js']);
+    
+    manager.addTransformers(options.transform);
     
     function main(req,res,next){
         try{
             var mpath = req.params[0];
-            var mode;
-            if(mpath.match(/^\$\//)){
-                mode = "source";
-                mpath = mpath.replace(/^\$\//,'');
-            }
-            
             var resolved = resolveModule(mpath,basedir);
-
             
-            fs.readFile(resolved.absolute, function(err, data) {
-                try{
-                    if (err) {
-                        throw new Error("File not found.");
-                    }
-                
-                    if(mode === "source"){
-                    
-                    }else{
-                        var contentType = mime.lookup(resolved.absolute);
-                        data = data.toString();
-                        if(~contentType.indexOf('json')){
-                            data = wrapJson(data,resolved.mpath,resolved.fullPath);
-                        }else{
-                            data = data.replace(/(\/\/#(.*?)sourceMappingURL(.*))$/gm,'');
-                            if(resolved.fullPath.match(/^\/public/)){
-                                //Шаг 1. Убираем все что не должно попасть на клиент
-                                
-                                data = enviromentTransformer("client")(data);
-
-                                // Транспилируем код
-                                var transpiled = babel.transform(data,{
-                                    "presets": ["es2015", "stage-0"],
-                                    "plugins": [
-                                        "transform-decorators-legacy"
-                                    ],
-                                    sourceMapTarget: req.originalUrl,
-                                    sourceRoot: '',
-                                    sourceFileName: resolved.fullPath,
-                                    sourceMaps: 'inline',
-                                    comments: false
-                                });
-                                data = transpiled.code;
-                            }
-        
-                            data = wrapSource(data,resolved.mpath,resolved.fullPath);
-                        }
-                    }
+            manager.transform(resolved.absolute,function(result){
+                if(result&&result.code!==undefined){
+                    var code = result.code;
+                    var map = result.map;
+                    code = wrapSource(code,resolved.mpath,resolved.fullPath);
                     
                     res.setHeader("Content-Type", 'text/javascript');
-                    res.writeHead(200);
-                    res.end(data);
-                }catch(e){
-                    console.log("error",e);
-                    res.status(404).send(e.message).end();
+                    res.append("Cache-Control", "max-age=31536000, must-revalidate");
+                    res.end(code);
+                }else{
+                    res.status(404).send("No such file").end();
                 }
+            },{
+                mapTarget: resolved.fullPath
             });
+        
         }catch(e){
             console.log("error",e);
             res.status(404).send(e.message).end();

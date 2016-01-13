@@ -1,5 +1,18 @@
 ModuleLoader = (function() {
     
+    function Deferred(){
+        var self = this;
+        
+        var promise = new Promise(function(resolve,reject){
+            self.reject = reject;
+            self.resolve = resolve;
+        });
+        
+        this.promise = promise;
+        this.then = promise.then.bind(promise);
+        this.catch = promise.catch.bind(promise);
+    };
+    
     var ignore = [/\/~\/(zlib|tty|fs|url|buffer|assert|http|https|net|util)$/];
     
     var path = {
@@ -98,7 +111,7 @@ ModuleLoader = (function() {
         };
         
     
-        require.async = function (moduleId,returnError) {
+        require.async = function (moduleId,dontExecute) {
             if(Array.isArray(moduleId)){
                 var moduleIds = moduleId;
                 
@@ -110,70 +123,70 @@ ModuleLoader = (function() {
             
             var resolved = resolveModuleId(moduleId);
             moduleId = resolved.moduleId;
+            var registration = ModuleLoader.registrations[moduleId];
+            if (!registration) {
+                registration = new Promise(function(resolve, reject) {
 
-            if (ModuleLoader.cache[moduleId]) {
-                return Promise.resolve((ModuleLoader.cache[moduleId] || {}).exports);
-            }
-            else {
-                var promise = ModuleLoader.promises[moduleId];
-                if (!promise) {
-                    promise = new Promise(function(resolve, reject) {
-
-                        //load and evaluate
-                        var url = moduleId;
-                        var fullPath = (resolved.relative?'':__dirname+'/~/') + url.replace(/^\./,'');
-                        url = path.normalize(ModuleLoader.baseUrl) + fullPath;
-                        var request;
+                    //load and evaluate
+                    var url = moduleId;
+                    var fullPath = (resolved.relative?'':__dirname+'/~/') + url.replace(/^\./,'');
+                    url = path.normalize(ModuleLoader.baseUrl) + fullPath;
+                    var request;
+                    
+                    if(ignore.some(function(rule){return rule.test(fullPath);})){
+                        request = Promise.resolve('');
+                    }else{
+                        request = httpGet(url);
+                    }
+                    
+                    
+                    request.then(function(response) {
+                        var moduleInfo = {};
                         
-                        if(ignore.some(function(rule){return rule.test(fullPath);})){
-                            request = Promise.resolve('');
-                        }else{
-                            request = httpGet(url);
-                        }
-                        
-                        
-                        request.then(function(response) {
-                            var moduleInfo = {};
-                            
-                            var source = response.replace(/\/\/#\s*?moduleInfo=(.*?)$/igm,function(match, p1, offset, string){
-                                if(p1){
-                                    moduleInfo = JSON.parse(p1);
-                                }
-                                return '';
-                            }).trim();
-
-                            
-                            ModuleLoader.register(moduleInfo.id,moduleInfo.filename,source).then(function(){
-                                if(!returnError){
-                                    ModuleLoader.cache[moduleId].execute();
-                                }
-                                Promise.resolve((ModuleLoader.cache[moduleId] || {}).exports).then(resolve);
-                            });
-                        }, function(response) {
-                            var error = new Error('Module "'+moduleId+'" can\'t be loaded!');
-                            
-                            if(returnError){
-                                ModuleLoader.cache[moduleId] = error;
-                                resolve(error);
-                            }else{
-                                reject(error);
+                        var source = response.replace(/\/\/#\s*?moduleInfo=(.*?)$/igm,function(match, p1, offset, string){
+                            if(p1){
+                                moduleInfo = JSON.parse(p1);
                             }
-                            
-                        });
+                            return '';
+                        }).trim();
+
+                        
+                        ModuleLoader.register(moduleInfo.id,moduleInfo.filename,source).then(resolve,reject);
+                        
+                    }, function(response) {
+                        var error = new Error('Module "'+moduleId+'" can\'t be loaded!');
+                        ModuleLoader.cache[moduleId] = error;
+                        resolve(error);
                     });
-                    ModuleLoader.promises[moduleId] = promise;
+                });
+                ModuleLoader.registrations[moduleId] = registration;
+            }
+            if(dontExecute){
+                
+                return registration;
+            }else{
+                var execution = ModuleLoader.executions[moduleId];
+                if(!execution){
+                    execution = registration.then(function(){
+                        if(ModuleLoader.cache[moduleId] instanceof Error){
+                            throw ModuleLoader.cache[moduleId];
+                        }else{
+                            return ModuleLoader.cache[moduleId].execute();
+                        }
+                    });    
                 }
-                return promise;
+                return execution;
             }
         }
 
         return require;
     }
 
-
-    ModuleLoader.promises = [];
-    ModuleLoader.context = window;
+    ModuleLoader.registrations = [];
+    ModuleLoader.executions = [];
     ModuleLoader.cache = [];
+    ModuleLoader.context = window;
+    
     ModuleLoader.register = function(id, __filename, source) {
         var __dirname = path.dir(__filename);
         var exports = {};
@@ -183,6 +196,8 @@ ModuleLoader = (function() {
         };
 
         ModuleLoader.cache[module.id] = module;
+        var executed = new Deferred();
+        
         var require = ModuleLoader(__dirname);
 
         var deps = [];
@@ -219,6 +234,7 @@ ModuleLoader = (function() {
                     window.onerror = function(e) {
                         error = e;
                     }
+                    
                     module.executed = true;
                     head.appendChild(script);
                     head.removeChild(script);
@@ -227,9 +243,13 @@ ModuleLoader = (function() {
                     window.onerror = onerror;
                     window.__context = context;
                     if (error){
+                        executed.reject(error);
                         throw error;
+                    }else{
+                        executed.resolve(Promise.resolve((ModuleLoader.cache[module.id] || {}).exports));
                     }
                 }
+                return executed.promise;
             };
         });
     };
